@@ -1,0 +1,11 @@
+langchain
+langchain-openai
+langchain-qdrant
+qdrant-client
+feedparser
+beautifulsoup4
+celery
+redis
+streamlit
+ragas
+python-dotenv

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets / environment
+.env
+*.env
+
+# Local data & vector stores
+*.db
+*.sqlite3
+chroma/
+qdrant_storage/
+storage/
+
+# Logs & local artifacts
+logs/
+claudedocs/
+.aris/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
