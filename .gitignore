@@ -14,6 +14,7 @@ env/
 *.db
 *.sqlite3
 chroma/
+qdrant_data/
 qdrant_storage/
 storage/
 
