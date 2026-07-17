@@ -1,0 +1,28 @@
+[tool.ruff]
+# Match the environment CI resolves against (ruff 0.14.14, Python 3.12).
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Pin the exact rule set CI's `ruff check .` enforces by default so that a
+# future change to ruff's defaults cannot silently diverge local from CI.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["tests"]
+# worker.py lives at the repo root; put it on sys.path so `import worker`
+# resolves when tests are collected from the tests/ package-less directory.
+pythonpath = ["."]
+
+[tool.mypy]
+# Lenient: this is a small worker whose runtime deps (qdrant/langchain/
+# streamlit) are intentionally absent from the test environment, so missing
+# stubs and untyped defs must not fail the type check.
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+warn_return_any = false
+warn_unused_ignores = false
