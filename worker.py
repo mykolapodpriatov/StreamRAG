@@ -124,6 +124,30 @@ def extract_entries(feed) -> list[dict]:
     return entries
 
 
+def dedupe_entries(entries: list[dict], key: str = "link") -> list[dict]:
+    """Drop entries already seen under their identity, preserving first-seen order.
+
+    Pure and side-effect free. Streaming re-polls the same feeds, so
+    :func:`extract_entries` yields the same items on every run; re-embedding
+    them into Qdrant each time is wasteful. Each entry's identity is its
+    non-empty ``key`` field (``"link"`` by default), falling back to ``"title"``
+    when the key is missing or empty. The first occurrence of an identity is
+    kept and any later entry sharing it is discarded. Entries with no usable
+    identity (empty ``key`` and empty ``title``) cannot be compared and are
+    always kept, so genuinely distinct-but-anonymous items are never merged.
+    """
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for entry in entries:
+        identity = entry.get(key) or entry.get("title") or ""
+        if identity:
+            if identity in seen:
+                continue
+            seen.add(identity)
+        deduped.append(entry)
+    return deduped
+
+
 def _parse_feed_with_timeout(feed_url: str):
     """Run feedparser.parse with a bounded socket timeout.
 
@@ -160,9 +184,9 @@ def process_rss_feed(feed_url: str):
             # feedparser sets the bozo flag if it encounters a badly formatted feed
             logger.warning("Poorly formatted feed %s", safe_url)
 
-        entries = extract_entries(feed)
+        entries = dedupe_entries(extract_entries(feed))
 
-        # TODO: Clean text, generate embeddings, and index into Qdrant
+        # TODO: generate embeddings and index the deduped entries into Qdrant
         return len(entries)
     except Exception:
         # Re-raise so Celery records the task as FAILED (and can retry) instead
