@@ -55,6 +55,27 @@ def _assert_public_host(feed_url: str) -> None:
             )
 
 
+def extract_entries(feed) -> list[dict]:
+    """Map a parsed feedparser result into a list of normalized entry dicts.
+
+    Pure and side-effect free: it performs no network I/O, so it can be tested
+    directly against ``feedparser.parse(<raw string>)`` output. Missing fields
+    fall back to safe defaults ("No Title" for the title, "" for link,
+    published and summary) so downstream indexing never encounters a missing
+    key. A malformed (bozo) feed still yields whatever entries feedparser
+    managed to recover, because this function only reads ``feed.entries``.
+    """
+    entries: list[dict] = []
+    for entry in getattr(feed, "entries", []):
+        entries.append({
+            "title": entry.get("title", "No Title"),
+            "link": entry.get("link", ""),
+            "published": entry.get("published", ""),
+            "summary": entry.get("summary", ""),
+        })
+    return entries
+
+
 def _parse_feed_with_timeout(feed_url: str):
     """Run feedparser.parse with a bounded socket timeout.
 
@@ -91,15 +112,8 @@ def process_rss_feed(feed_url: str):
             # feedparser sets the bozo flag if it encounters a badly formatted feed
             logger.warning("Poorly formatted feed %s", safe_url)
 
-        entries = []
-        for entry in getattr(feed, "entries", []):
-            entries.append({
-                "title": getattr(entry, "title", "No Title"),
-                "link": getattr(entry, "link", ""),
-                "published": entry.get("published", ""),
-                "summary": entry.get("summary", "")
-            })
-            
+        entries = extract_entries(feed)
+
         # TODO: Clean text, generate embeddings, and index into Qdrant
         return len(entries)
     except Exception:

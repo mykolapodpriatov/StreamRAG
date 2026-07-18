@@ -20,3 +20,18 @@ jobs:
         run: ruff check .
       - name: Byte-compile sources
         run: python -m compileall -q .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal test dependencies
+        # Deliberately NOT `-r requirements.txt`: worker.py imports only
+        # celery + feedparser at module scope, so the SSRF/redaction and
+        # extract_entries tests run without pulling qdrant/langchain/streamlit.
+        run: pip install pytest feedparser celery redis
+      - name: Run tests
+        run: pytest -q
