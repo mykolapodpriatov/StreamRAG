@@ -1,7 +1,9 @@
+import html
 import ipaddress
 import logging
 import os
 import socket
+from html.parser import HTMLParser
 from urllib.parse import urlparse, urlunparse
 
 from celery import Celery
@@ -55,6 +57,52 @@ def _assert_public_host(feed_url: str) -> None:
             )
 
 
+class _TagStripper(HTMLParser):
+    """Collect an element's text content while discarding tags and attributes.
+
+    ``convert_charrefs`` is disabled so the parser does not decode character or
+    entity references piecemeal; instead they are reassembled verbatim and left
+    for a single ``html.unescape`` pass in :func:`clean_html_text`. That keeps
+    every reference decoded exactly once (so e.g. ``&amp;lt;`` yields ``&lt;``,
+    not ``<``).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self._parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self._parts.append(f"&#{name};")
+
+    def get_text(self) -> str:
+        return "".join(self._parts)
+
+
+def clean_html_text(value: str) -> str:
+    """Strip HTML tags, decode entities, and collapse whitespace in feed text.
+
+    Pure and side-effect free. RSS ``title``/``summary`` fields routinely carry
+    markup (``<p>``, ``<a href=...>``) and HTML entities (``&amp;``) that would
+    otherwise pollute downstream embeddings. Tags are removed, references are
+    unescaped once, and runs of whitespace collapse to single spaces with the
+    ends trimmed. Plain, tagless input is therefore returned unchanged apart
+    from whitespace normalization, preserving the verbatim-mapping guarantees.
+    """
+    if not value:
+        return ""
+    stripper = _TagStripper()
+    stripper.feed(value)
+    stripper.close()
+    text = html.unescape(stripper.get_text())
+    return " ".join(text.split())
+
+
 def extract_entries(feed) -> list[dict]:
     """Map a parsed feedparser result into a list of normalized entry dicts.
 
@@ -68,12 +116,36 @@ def extract_entries(feed) -> list[dict]:
     entries: list[dict] = []
     for entry in getattr(feed, "entries", []):
         entries.append({
-            "title": entry.get("title", "No Title"),
+            "title": clean_html_text(entry.get("title", "No Title")),
             "link": entry.get("link", ""),
             "published": entry.get("published", ""),
-            "summary": entry.get("summary", ""),
+            "summary": clean_html_text(entry.get("summary", "")),
         })
     return entries
+
+
+def dedupe_entries(entries: list[dict], key: str = "link") -> list[dict]:
+    """Drop entries already seen under their identity, preserving first-seen order.
+
+    Pure and side-effect free. Streaming re-polls the same feeds, so
+    :func:`extract_entries` yields the same items on every run; re-embedding
+    them into Qdrant each time is wasteful. Each entry's identity is its
+    non-empty ``key`` field (``"link"`` by default), falling back to ``"title"``
+    when the key is missing or empty. The first occurrence of an identity is
+    kept and any later entry sharing it is discarded. Entries with no usable
+    identity (empty ``key`` and empty ``title``) cannot be compared and are
+    always kept, so genuinely distinct-but-anonymous items are never merged.
+    """
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for entry in entries:
+        identity = entry.get(key) or entry.get("title") or ""
+        if identity:
+            if identity in seen:
+                continue
+            seen.add(identity)
+        deduped.append(entry)
+    return deduped
 
 
 def _parse_feed_with_timeout(feed_url: str):
@@ -112,9 +184,9 @@ def process_rss_feed(feed_url: str):
             # feedparser sets the bozo flag if it encounters a badly formatted feed
             logger.warning("Poorly formatted feed %s", safe_url)
 
-        entries = extract_entries(feed)
+        entries = dedupe_entries(extract_entries(feed))
 
-        # TODO: Clean text, generate embeddings, and index into Qdrant
+        # TODO: generate embeddings and index the deduped entries into Qdrant
         return len(entries)
     except Exception:
         # Re-raise so Celery records the task as FAILED (and can retry) instead
