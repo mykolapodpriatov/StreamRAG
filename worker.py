@@ -3,11 +3,15 @@ import ipaddress
 import logging
 import os
 import socket
+import uuid
 from html.parser import HTMLParser
 from urllib.parse import urlparse, urlunparse
 
 from celery import Celery
 import feedparser
+from langchain_openai import OpenAIEmbeddings
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,6 +22,30 @@ app = Celery("streamrag", broker=REDIS_URL, backend=REDIS_URL)
 # Bound the network fetch performed by feedparser so a slow/hanging feed server
 # cannot block the Celery worker indefinitely.
 FEED_FETCH_TIMEOUT = float(os.getenv("FEED_FETCH_TIMEOUT", "10"))
+
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "streamrag_entries")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+# check_compatibility=False: by default the constructor makes a lightweight
+# call to the server to compare client/server versions, which would make
+# `import worker` (and therefore test collection) depend on a reachable
+# Qdrant instance. Actual requests still connect lazily on first use.
+qdrant = QdrantClient(url=QDRANT_URL, check_compatibility=False)
+
+# The OpenAI embeddings client is *not* built at import time: instantiating
+# it eagerly requires OPENAI_API_KEY to already be set, which would make
+# `import worker` (and therefore test collection) fail in any environment
+# without that key configured. It is created lazily on first use instead.
+_embeddings: OpenAIEmbeddings | None = None
+
+
+def _get_embeddings() -> OpenAIEmbeddings:
+    """Lazily construct and cache the OpenAI embeddings client."""
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
+    return _embeddings
 
 
 def _redact_url(url: str) -> str:
@@ -148,6 +176,69 @@ def dedupe_entries(entries: list[dict], key: str = "link") -> list[dict]:
     return deduped
 
 
+def _point_id_for_entry(entry: dict) -> str:
+    """Derive a stable Qdrant point ID from an entry's identity.
+
+    Hashed deterministically (uuid5 over a fixed namespace) from the entry's
+    ``link`` so that re-polling the same feed re-embeds and *upserts* the same
+    point instead of accumulating duplicates. Falls back to ``title`` for the
+    rare entry with no link, mirroring :func:`dedupe_entries`'s identity rule
+    so two different no-link entries don't collide on the same empty-string
+    hash.
+    """
+    identity = entry.get("link") or entry.get("title") or ""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+
+
+def _ensure_collection(vector_size: int) -> None:
+    """Create the target Qdrant collection on first use, idempotently.
+
+    Safe to call before every batch of upserts: it only issues a
+    ``create_collection`` call when the collection does not already exist.
+    Cosine distance matches the metric OpenAI's embedding models are tuned
+    for.
+    """
+    if not qdrant.collection_exists(QDRANT_COLLECTION):
+        qdrant.create_collection(
+            collection_name=QDRANT_COLLECTION,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+
+
+def _embed_and_index(entries: list[dict]) -> int:
+    """Embed each entry and upsert it into Qdrant, returning the point count.
+
+    An empty ``entries`` list is a no-op (no embedding call, no collection
+    lookup). Any failure from the embedding call or the Qdrant upsert
+    propagates to the caller unchanged; nothing here swallows exceptions.
+    """
+    if not entries:
+        return 0
+
+    texts = [
+        f"{entry.get('title', '')}\n\n{entry.get('summary', '')}".strip() for entry in entries
+    ]
+    vectors = _get_embeddings().embed_documents(texts)
+
+    _ensure_collection(len(vectors[0]))
+
+    points = [
+        PointStruct(
+            id=_point_id_for_entry(entry),
+            vector=vector,
+            payload={
+                "title": entry.get("title", ""),
+                "link": entry.get("link", ""),
+                "published": entry.get("published", ""),
+                "summary": entry.get("summary", ""),
+            },
+        )
+        for entry, vector in zip(entries, vectors)
+    ]
+    qdrant.upsert(collection_name=QDRANT_COLLECTION, points=points)
+    return len(points)
+
+
 def _parse_feed_with_timeout(feed_url: str):
     """Run feedparser.parse with a bounded socket timeout.
 
@@ -164,7 +255,10 @@ def _parse_feed_with_timeout(feed_url: str):
 
 @app.task
 def process_rss_feed(feed_url: str):
-    """Fetch and process an RSS feed and return the number of entries found."""
+    """Fetch, dedupe, embed, and index an RSS feed's entries into Qdrant.
+
+    Returns the number of points actually upserted into the collection.
+    """
     safe_url = _redact_url(feed_url)
 
     # Reject non-HTTP(S) schemes to mitigate SSRF / local-file disclosure
@@ -186,8 +280,7 @@ def process_rss_feed(feed_url: str):
 
         entries = dedupe_entries(extract_entries(feed))
 
-        # TODO: generate embeddings and index the deduped entries into Qdrant
-        return len(entries)
+        return _embed_and_index(entries)
     except Exception:
         # Re-raise so Celery records the task as FAILED (and can retry) instead
         # of masking the error as a successful empty result.

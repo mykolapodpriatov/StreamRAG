@@ -26,6 +26,9 @@ ingestion. The retrieval / answering layer is the next milestone (see Roadmap).
    ```bash
    pip install -r requirements.txt
    ```
+   Set `OPENAI_API_KEY` for embeddings. `QDRANT_URL` (default
+   `http://localhost:6333`) and `QDRANT_COLLECTION` (default
+   `streamrag_entries`) can be overridden as needed.
 3. Run the Celery worker:
    ```bash
    celery -A worker.app worker --loglevel=info
