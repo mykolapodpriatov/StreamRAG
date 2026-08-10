@@ -29,9 +29,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install minimal test dependencies
-        # Deliberately NOT `-r requirements.txt`: worker.py imports only
-        # celery + feedparser at module scope, so the SSRF/redaction and
-        # extract_entries tests run without pulling qdrant/langchain/streamlit.
-        run: pip install pytest feedparser celery redis
+        # Deliberately NOT `-r requirements.txt`: worker.py only imports
+        # celery, feedparser, qdrant-client, and langchain-openai at module
+        # scope (langchain proper, ragas, and streamlit are unused by it), so
+        # the test suite runs without pulling those heavier extras. The
+        # Qdrant/embeddings tests mock qdrant-client and OpenAIEmbeddings, so
+        # no live network or API key is required either.
+        run: pip install pytest feedparser celery redis qdrant-client langchain-openai
       - name: Run tests
         run: pytest -q
