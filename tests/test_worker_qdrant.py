@@ -5,6 +5,12 @@ fakes, so no live network call, real Qdrant instance, or OpenAI API key is
 ever required.
 """
 
+from datetime import datetime, timezone
+from email.utils import format_datetime
+
+import pytest
+
+import scoring
 import worker
 
 
@@ -130,12 +136,12 @@ def test_embed_and_index_upserts_one_point_per_entry_with_expected_payload(monke
 
     point_by_link = {p.payload["link"]: p for p in fake_client.upserted_points}
     first = point_by_link["https://example.com/1"]
-    assert first.payload == {
-        "title": "First",
-        "link": "https://example.com/1",
-        "published": "d1",
-        "summary": "s1",
-    }
+    assert first.payload["title"] == "First"
+    assert first.payload["link"] == "https://example.com/1"
+    assert first.payload["published"] == "d1"
+    assert first.payload["summary"] == "s1"
+    # "d1" is not a parseable RSS date, so the stored weight is the unknown default.
+    assert first.payload["recency_weight"] == scoring.UNKNOWN_DATE_WEIGHT
     assert first.id == worker._point_id_for_entry(entries[0])
 
     # The collection was created (it didn't exist) before the upsert.
@@ -168,6 +174,38 @@ def test_embed_and_index_repolling_same_link_upserts_not_duplicates(monkeypatch)
     assert len(fake_client.upsert_calls) == 2
     ids = {p.id for p in fake_client.upserted_points}
     assert ids == {worker._point_id_for_entry(entry)}
+
+
+def test_embed_and_index_stores_near_one_recency_for_just_published(monkeypatch):
+    fake_client = FakeQdrantClient(exists=True)
+    fake_embeddings = FakeEmbeddings()
+    monkeypatch.setattr(worker, "qdrant", fake_client)
+    monkeypatch.setattr(worker, "_get_embeddings", lambda: fake_embeddings)
+
+    now = datetime(2021, 9, 7, 12, 0, 0, tzinfo=timezone.utc)
+    worker._embed_and_index(
+        [_entry(published=format_datetime(now))],
+        now=now,
+    )
+
+    weight = fake_client.upserted_points[0].payload["recency_weight"]
+    assert weight == pytest.approx(1.0)
+
+
+def test_embed_and_index_stores_zero_recency_when_published_missing(monkeypatch):
+    fake_client = FakeQdrantClient(exists=True)
+    fake_embeddings = FakeEmbeddings()
+    monkeypatch.setattr(worker, "qdrant", fake_client)
+    monkeypatch.setattr(worker, "_get_embeddings", lambda: fake_embeddings)
+
+    worker._embed_and_index([_entry(published="")], now=datetime.now(timezone.utc))
+
+    payload = fake_client.upserted_points[0].payload
+    assert payload["recency_weight"] == scoring.UNKNOWN_DATE_WEIGHT
+    assert payload["title"] == "Title"
+    assert payload["link"] == "https://example.com/a"
+    assert payload["published"] == ""
+    assert payload["summary"] == "Summary"
 
 
 def test_embed_and_index_propagates_embedding_failure(monkeypatch):

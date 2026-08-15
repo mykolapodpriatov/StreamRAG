@@ -4,6 +4,7 @@ import logging
 import os
 import socket
 import uuid
+from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urlparse, urlunparse
 
@@ -12,6 +13,8 @@ import feedparser
 from langchain_openai import OpenAIEmbeddings
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
+
+from scoring import recency_weight
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -205,12 +208,16 @@ def _ensure_collection(vector_size: int) -> None:
         )
 
 
-def _embed_and_index(entries: list[dict]) -> int:
+def _embed_and_index(entries: list[dict], now: datetime | None = None) -> int:
     """Embed each entry and upsert it into Qdrant, returning the point count.
 
     An empty ``entries`` list is a no-op (no embedding call, no collection
     lookup). Any failure from the embedding call or the Qdrant upsert
     propagates to the caller unchanged; nothing here swallows exceptions.
+
+    ``now`` is forwarded to :func:`scoring.recency_weight` so tests can pin
+    the clock; production callers omit it and use the wall clock. Empty or
+    missing ``published`` fields store ``UNKNOWN_DATE_WEIGHT`` (0.0).
     """
     if not entries:
         return 0
@@ -231,6 +238,7 @@ def _embed_and_index(entries: list[dict]) -> int:
                 "link": entry.get("link", ""),
                 "published": entry.get("published", ""),
                 "summary": entry.get("summary", ""),
+                "recency_weight": recency_weight(entry.get("published", ""), now=now),
             },
         )
         for entry, vector in zip(entries, vectors)
