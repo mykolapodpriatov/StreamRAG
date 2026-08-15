@@ -1,8 +1,10 @@
+import argparse
 import html
 import ipaddress
 import logging
 import os
 import socket
+import sys
 import uuid
 from datetime import datetime
 from html.parser import HTMLParser
@@ -294,3 +296,54 @@ def process_rss_feed(feed_url: str):
         # of masking the error as a successful empty result.
         logger.exception("Error processing feed %s", safe_url)
         raise
+
+
+def ingest_local_file(
+    path: str,
+    *,
+    dry_run: bool = False,
+    embed_and_index=None,
+) -> int:
+    """Parse a local RSS/Atom file and either print titles or index it.
+
+    Uses :func:`feedparser.parse` on ``path`` (no HTTP), then the existing
+    extract/dedupe helpers. ``embed_and_index`` is injectable so tests and CI
+    can skip OpenAI and Qdrant; it defaults to :func:`_embed_and_index`.
+    ``--dry-run`` never touches the indexer.
+    """
+    feed = feedparser.parse(path)
+    entries = dedupe_entries(extract_entries(feed))
+    if dry_run:
+        for entry in entries:
+            print(entry["title"])
+        return len(entries)
+    indexer = _embed_and_index if embed_and_index is None else embed_and_index
+    return indexer(entries)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry for ``python -m worker <file> [--dry-run]``.
+
+    Does not enqueue a Celery task. ``REDIS_URL`` may be unset; dry-run never
+    opens Redis, Qdrant, or OpenAI.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m worker",
+        description="Ingest a local RSS/Atom file without Celery or a live URL.",
+    )
+    parser.add_argument("path", help="Path to a local RSS or Atom file")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print extracted, deduped titles and skip embedding/Qdrant",
+    )
+    args = parser.parse_args(argv)
+    if not os.path.isfile(args.path):
+        print(f"No such file: {args.path}", file=sys.stderr)
+        return 1
+    ingest_local_file(args.path, dry_run=args.dry_run)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
