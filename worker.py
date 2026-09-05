@@ -16,6 +16,7 @@ from langchain_openai import OpenAIEmbeddings
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
+import config
 from scoring import recency_weight
 
 logging.basicConfig(level=logging.INFO)
@@ -28,9 +29,11 @@ app = Celery("streamrag", broker=REDIS_URL, backend=REDIS_URL)
 # cannot block the Celery worker indefinitely.
 FEED_FETCH_TIMEOUT = float(os.getenv("FEED_FETCH_TIMEOUT", "10"))
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "streamrag_entries")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+# Read from config so the worker and the retriever cannot drift apart on the
+# collection name or, more importantly, the embedding model.
+QDRANT_URL = config.QDRANT_URL
+QDRANT_COLLECTION = config.QDRANT_COLLECTION
+EMBEDDING_MODEL = config.EMBEDDING_MODEL
 
 # check_compatibility=False: by default the constructor makes a lightweight
 # call to the server to compare client/server versions, which would make
@@ -241,6 +244,10 @@ def _embed_and_index(entries: list[dict], now: datetime | None = None) -> int:
                 "published": entry.get("published", ""),
                 "summary": entry.get("summary", ""),
                 "recency_weight": recency_weight(entry.get("published", ""), now=now),
+                # Recorded so a query can refuse to search a collection written
+                # by a different model instead of ranking by a similarity that
+                # means nothing. See retrieval.EmbeddingModelMismatchError.
+                "embedding_model": EMBEDDING_MODEL,
             },
         )
         for entry, vector in zip(entries, vectors)

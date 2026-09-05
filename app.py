@@ -4,15 +4,21 @@ Qdrant/Redis helpers live at module scope so they can be unit-tested without
 importing Streamlit (CI does not install it) or talking to live services.
 """
 
-import os
-
 from celery import Celery
 from qdrant_client import QdrantClient
 import redis as redis_lib
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "streamrag_entries")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+import config
+from retrieval import EmbeddingModelMismatchError, retrieve
+
+# Read from config so the dashboard, the worker and the retriever cannot drift
+# apart on the collection they point at.
+QDRANT_URL = config.QDRANT_URL
+QDRANT_COLLECTION = config.QDRANT_COLLECTION
+REDIS_URL = config.REDIS_URL
+
+#: How many passages the search box shows.
+SEARCH_RESULTS = 5
 
 # Shown when Qdrant or Redis cannot be reached. Distinct from ``0``, which
 # means "connected, but nothing indexed / no workers yet".
@@ -122,12 +128,36 @@ def main():
     with col2:
         st.metric(label="Active Streams", value=streams)
 
-    st.subheader("Query the Knowledge Base")
+    st.subheader("Search the indexed feeds")
+    st.caption(
+        "These are the passages retrieved from the index, ranked by semantic "
+        "similarity blended with recency. They are not a generated answer."
+    )
     query = st.text_input("Enter your query:")
     if query:
-        st.write(f"Searching for: {query}...")
-        # Placeholder for RAG pipeline
-        st.info("Answer will appear here.")
+        with st.spinner("Searching..."):
+            try:
+                passages = retrieve(query, k=SEARCH_RESULTS, client=_qdrant_client())
+            except EmbeddingModelMismatchError as exc:
+                st.error(str(exc))
+                passages = []
+            except Exception as exc:  # Qdrant unreachable, embedder misconfigured
+                st.error(f"Search failed: {exc}")
+                passages = []
+
+        if not passages:
+            st.info("Nothing matched. If the index is empty, run the ingestion worker first.")
+        for passage in passages:
+            title = passage.title or passage.link or "(untitled)"
+            with st.expander(f"{title} · {passage.published or 'no date'}"):
+                st.caption(
+                    f"score {passage.score:.3f} "
+                    f"(similarity {passage.similarity:.3f}, recency {passage.recency:.3f})"
+                )
+                if passage.link:
+                    st.markdown(f"[{passage.link}]({passage.link})")
+                if passage.summary:
+                    st.write(passage.summary)
 
 
 if __name__ == "__main__":
