@@ -190,11 +190,22 @@ def _point_id_for_entry(entry: dict) -> str:
     Hashed deterministically (uuid5 over a fixed namespace) from the entry's
     ``link`` so that re-polling the same feed re-embeds and *upserts* the same
     point instead of accumulating duplicates. Falls back to ``title`` for the
-    rare entry with no link, mirroring :func:`dedupe_entries`'s identity rule
-    so two different no-link entries don't collide on the same empty-string
-    hash.
+    rare entry with no link, mirroring :func:`dedupe_entries`'s identity rule.
+
+    An entry with neither link nor title is still kept by ``dedupe_entries``
+    when its published time or summary differs. Hashing the empty string would
+    put every such entry on one point, so the next upsert deletes the previous
+    one. Those entries are hashed from published and summary instead, under a
+    prefix that cannot collide with a real link or title.
     """
-    identity = entry.get("link") or entry.get("title") or ""
+    link = entry.get("link") or ""
+    title = entry.get("title") or ""
+    if link or title:
+        identity = link or title
+    else:
+        published = entry.get("published") or ""
+        summary = entry.get("summary") or ""
+        identity = "\0".join(["anon", published, summary])
     return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
 
 

@@ -76,6 +76,17 @@ def test_point_id_falls_back_to_title_when_link_missing():
     assert worker._point_id_for_entry(entry_a) != worker._point_id_for_entry(entry_c)
 
 
+def test_anonymous_entries_do_not_share_one_point_id():
+    # No link and no title used to hash to the empty string, so two different
+    # items upserted onto the same Qdrant point and the second deleted the first.
+    one = _entry(title="", link="", published="Mon, 01 Jan 2024", summary="first item")
+    two = _entry(title="", link="", published="Tue, 02 Jan 2024", summary="second item")
+    same = _entry(title="", link="", published="Mon, 01 Jan 2024", summary="first item")
+
+    assert worker._point_id_for_entry(one) != worker._point_id_for_entry(two)
+    assert worker._point_id_for_entry(one) == worker._point_id_for_entry(same)
+
+
 # --------------------------------------------------------------------------- #
 # _ensure_collection
 # --------------------------------------------------------------------------- #
