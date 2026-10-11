@@ -13,10 +13,7 @@ def test_strips_tags_and_keeps_text():
 
 
 def test_drops_tag_attributes_but_keeps_link_text():
-    assert (
-        worker.clean_html_text('<a href="https://example.com">click here</a>')
-        == "click here"
-    )
+    assert worker.clean_html_text('<a href="https://example.com">click here</a>') == "click here"
 
 
 def test_decodes_html_entities():
@@ -35,10 +32,7 @@ def test_double_escaped_entity_decodes_only_one_level():
 
 
 def test_collapses_internal_and_surrounding_whitespace():
-    assert (
-        worker.clean_html_text("  <div>  spaced\n\tout   text  </div>  ")
-        == "spaced out text"
-    )
+    assert worker.clean_html_text("  <div>  spaced\n\tout   text  </div>  ") == "spaced out text"
 
 
 def test_empty_input_returns_empty_string():
@@ -48,6 +42,12 @@ def test_empty_input_returns_empty_string():
 def test_whitespace_and_tag_only_input_returns_empty_string():
     # Markup with no text content collapses to the empty string.
     assert worker.clean_html_text("  <br/> <hr>  ") == ""
+
+
+def test_adjacent_block_tags_do_not_glue_words():
+    assert worker.clean_html_text("<p>Hello</p><p>world</p>") == "Hello world"
+    assert worker.clean_html_text("Hello<br>world") == "Hello world"
+    assert worker.clean_html_text("Hello<br/>world") == "Hello world"
 
 
 def test_plain_text_is_returned_unchanged():
