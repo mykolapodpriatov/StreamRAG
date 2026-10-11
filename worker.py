@@ -93,6 +93,37 @@ def _assert_public_host(feed_url: str) -> None:
             )
 
 
+# Tags that separate words. Inline tags (b, i, a, span) do not, so
+# "Hello <b>world</b>" stays "Hello world" from the space that was already there.
+_BLOCK_TAGS = frozenset(
+    {
+        "p",
+        "div",
+        "br",
+        "hr",
+        "li",
+        "tr",
+        "td",
+        "th",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "blockquote",
+        "section",
+        "article",
+        "ul",
+        "ol",
+        "table",
+        "pre",
+        "dd",
+        "dt",
+    }
+)
+
+
 class _TagStripper(HTMLParser):
     """Collect an element's text content while discarding tags and attributes.
 
@@ -106,6 +137,17 @@ class _TagStripper(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # A block tag is a word boundary. <p>Hello</p><p>world</p> is two
+        # words, and so is Hello<br>world. Inline tags stay glued, which is
+        # what an existing "Hello <b>world</b>" case already relies on.
+        if tag.lower() in _BLOCK_TAGS:
+            self._parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in _BLOCK_TAGS:
+            self._parts.append(" ")
 
     def handle_data(self, data: str) -> None:
         self._parts.append(data)
@@ -151,12 +193,14 @@ def extract_entries(feed) -> list[dict]:
     """
     entries: list[dict] = []
     for entry in getattr(feed, "entries", []):
-        entries.append({
-            "title": clean_html_text(entry.get("title", "No Title")),
-            "link": entry.get("link", ""),
-            "published": entry.get("published", ""),
-            "summary": clean_html_text(entry.get("summary", "")),
-        })
+        entries.append(
+            {
+                "title": clean_html_text(entry.get("title", "No Title")),
+                "link": entry.get("link", ""),
+                "published": entry.get("published", ""),
+                "summary": clean_html_text(entry.get("summary", "")),
+            }
+        )
     return entries
 
 
@@ -238,9 +282,7 @@ def _embed_and_index(entries: list[dict], now: datetime | None = None) -> int:
     if not entries:
         return 0
 
-    texts = [
-        f"{entry.get('title', '')}\n\n{entry.get('summary', '')}".strip() for entry in entries
-    ]
+    texts = [f"{entry.get('title', '')}\n\n{entry.get('summary', '')}".strip() for entry in entries]
     vectors = _get_embeddings().embed_documents(texts)
 
     _ensure_collection(len(vectors[0]))
